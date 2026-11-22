@@ -1,93 +1,68 @@
 # Blast Radius
 
-This entry selects tests using measured dependencies from the pinned SQLGlot checkout. It keeps a full-suite fallback and chooses the least expensive schedule it finds across one to eight workers.
+A regression test selector for the [RWX Blast Radius track](https://www.joinbuilders.org/buildathon/tracks/blast-radius) at the Builders Buildathon. Given a patch to SQLGlot and a test manifest, it selects the tests most likely to be affected and assigns them to up to eight workers.
 
-## The problem
+## Local validation
 
-Your image gets a batch of code changes to [sqlglot](https://github.com/tobymao/sqlglot) at commit `eb11aec4be8cb2122afe713a4816662c3f0fb2fa`. For each change, print which tests to run and how to split them across up to 8 workers.
+| Run | Simulated time | Missed patches |
+| --- | ---: | ---: |
+| Earlier full-suite baseline on the 30 official samples | 1,104.510 s | 0 |
+| Coverage selector in Linux Docker on the same samples | **315.010 s** | **0** |
 
-| | |
-| --- | --- |
-| `/data/commits/<id>.patch` | One unified diff against the pinned commit. Each stands alone: none builds on another. |
-| `/data/tests.json` | Every test, numbered, with its file and the seconds it took us to run. |
-| stdout | One JSON line a commit: `{"commit": "k7q2", "workers": [[12, 845, 901], [3, 77]]}` |
+The Docker run used the track's sample limits. The sample scorer reports simulated time and misses. The competition scorer also charges CPU time and evaluates unseen patches.
 
-Each inner list is one worker's test numbers. `"workers": []` runs nothing, which is the right answer for a change that breaks nothing.
+In a separate check, disabling identifier normalization caused 46 test IDs to fail. The selector included all 46 among the 309 tests it selected. Coverage from the original checkout is an estimate of impact. Changes that alter imports, dynamic dispatch, or dependencies can require a wider selection.
 
-## Scoring
+## How it works
 
-Lower is better. [SCORING.md](SCORING.md) has the exact rules; in short:
+1. **Build the dependency map.** Record which tests execute each source line or read each fixture and source file on pinned SQLGlot. Include Python worker processes started by optimizer and executor tests. The bundled map covers 1,620 test IDs, 183 source files, and 62 fixture paths.
+2. **Select tests for a patch.** Check each diff against the pinned source, look up coverage for affected statements or functions, and combine the results across changed files. Include tests that reached any operand when an edit could change short-circuit behavior. Use the full suite when the patch or its import-time effects cannot be mapped with enough confidence.
+3. **Schedule the selected tests.** Try one through eight workers. For each worker count, place the longest test first on the least busy worker. Choose the schedule with the lowest simulated cost, including the two-second charge per worker.
 
-- A commit costs the recorded seconds of its busiest worker, plus 2 seconds for every worker.
-- A commit where you left out a test that fails adds 300 seconds.
-- The CPU seconds your program uses are added. Running sqlglot's tests while you decide is allowed, and you pay for the time.
-- Your image runs 3 times and the middle total counts.
+The container reads `/data/tests.json` and independent patches under `/data/commits/`. It prints one JSON object per patch on stdout, using the numerical test IDs from the manifest. For example:
 
-"Fails" means pytest reports a failure, an error or a timeout for the test, or the test's file cannot be imported. A test with subtests is one test: one failing subtest fails it.
-
-## Try it
-
-You need Docker, make and Python 3.9 or newer. The kit unpacks into the folder you are in, so unpack it into an empty one.
-
-```sh
-make sample   # build, run once on the 30 sample commits under the scorer's limits, and score
-make check    # the output's format only
+```json
+{"commit":"k7q2","workers":[[12,845],[3,77]]}
 ```
 
-`make sample` prints your simulated seconds and misses, which are exact for that output. The board adds the CPU seconds your container used and takes the middle of 3 runs, so expect it a little higher. Your program never sees `sample/answers.json`: only the patches and `tests.json` are mounted.
+The container uses the bundled map offline. It receives the patches and manifest, while the host scorer reads `sample/answers.json`. See [SCORING.md](SCORING.md) for the output contract and scoring rules.
 
-`sample/answers.json` lists the tests each sample commit breaks and the kind of change it is. The practice and final commits are hidden, and so is everything your program prints when it runs on them. A rejected submission tells you which rule it broke and nothing more, so reproduce problems here.
+## Run the official sample
 
-## Submit
+From the repository root, with Docker running and `python3` available:
 
-Push to a public GitHub repository with the `Dockerfile` at its top, then enter the repository and the commit hash on the track page. The final scores the commit you pick. If you pick none, your best practice submission counts.
+```sh
+make sample
+```
 
-## Rules
+On Windows Command Prompt with Docker, Python, and MinGW Make on `PATH`, run:
 
-- Submit your own team's repository. A submission with the same repository, commit or archive as another team's is disqualified, the later one.
-- Your build may download only from public package registries: PyPI, npm, Docker Hub, GitHub releases at a fixed tag, and sqlglot’s own repository at the pinned commit. Nothing from an address your team controls. The final rebuilds every image after the cutoff, so anything else could change a submission after the deadline.
-- No answers worked out ahead of time and looked up by patch: no table from a patch, or from a kind of edit, to the tests it breaks. Maps built from the pinned commit (coverage, imports, fixtures) are allowed. Top entries are read.
-- Only the final counts. The practice board carries no prize.
+```cmd
+mingw32-make sample
+```
 
-## How your image runs
+This builds the `linux/amd64` image, runs the selector with the sample input mounted read-only, saves its JSONL output to `output.jsonl`, and scores it. It runs the selector as an unprivileged user with networking disabled.
 
-- The build has the network, 4 cores, 8 GB of memory and 10 minutes. It may clone sqlglot at the pinned commit, install it and run its tests to make coverage or import maps.
-- Your repository may hold 20 MB. Git submodules and Git LFS files are not fetched: clone sqlglot in the `Dockerfile` and commit maps as plain files.
-- The run has no network, 2 cores, 4 GB of memory and 3 minutes for the whole batch (4.5 in the final, which has about one and a half times as many commits).
-- The disk is read-only. `/tmp` holds 64 MB and is empty at the start of every run.
-- The container runs as user `nobody`, with `HOME=/tmp` and at most 256 processes.
-- stdout may hold 2 MB. More rejects the run.
+For quicker development without Docker:
 
-## Things that will catch you
+```sh
+python -m unittest discover -s tests -v
+python tools/evaluate.py
+```
 
-- Logs go to stderr. Any line on stdout that is not an answer rejects the run.
-- `score.py` names a broken rule by its code, as in `Rejected: not_json on line 1`. The table in SCORING.md says what each code means.
-- Files your program needs must be readable by `nobody`. A map written by `root` during the build with mode 600 is not.
-- pytest 9 prints a test as `PASSED` beside `SUBFAILED` lines when one of its subtests fails. That test failed.
-- sqlglot skips its executor tests unless `SKIP_INTEGRATION=0` is set. We labeled with it set, so those tests can fail.
-- `requirements.lock` is every package in the environment we labeled in, on the image the `Dockerfile` starts from. To run sqlglot's tests the way we did, `pip install -r requirements.lock` and put the sqlglot checkout on `PYTHONPATH`; sqlglot's own `pip install -e .[dev]` picks newer versions.
-- The scorer is linux/amd64. On an Apple Silicon Mac, build and run with `--platform linux/amd64`, as the Makefile does, or your timings and wheels will differ.
-- A change that only adds a comment is not promised to be harmless.
+## Rebuild the dependency map
 
-## Development
+Use a separate, clean [SQLGlot checkout at `eb11aec4`](https://github.com/tobymao/sqlglot/tree/eb11aec4be8cb2122afe713a4816662c3f0fb2fa). From this repository's root, install the starter kit's test environment and Coverage.py in a Python virtual environment, then run the generator. Replace `/path/to/sqlglot` with your checkout path.
 
-    python -m unittest discover -s tests -v
-    python tools/evaluate.py
-    make sample
+```sh
+python -m pip install -r requirements.lock coverage==7.17.4
+python tools/build_impact.py /path/to/sqlglot sample/tests.json impact-map.json.gz
+```
 
-The map uses pytest test IDs, per-test line coverage and observed reads of fixture and source files. The selector checks the diff against the pinned source, looks up coverage for affected statements or functions, and unions the results across files. It selects the full suite for unsupported changes and changes with unresolved effects during import. Python edits with an identical abstract syntax tree still select tests that read the source file. Coverage measures the pristine checkout, so different dependencies or behavior in the scoring environment can affect recall.
+The generator runs tests against the pinned checkout and uses the manifest to map pytest node IDs to the recorded coverage. Docker builds copy the resulting map into the image.
 
-To reproduce the map, install the test dependencies and `coverage==7.17.4`, check out the pinned SQLGlot revision in a separate directory with no tracked edits, and run:
+## License and credits
 
-    python tools/build_impact.py PATH_TO_SQLGLOT sample/tests.json impact-map.json.gz
+This project is released under the [MIT License](LICENSE), as required by the [Builders Buildathon rules](https://www.joinbuilders.org/buildathon#rules). The Builders/RWX starter kit provided the original Dockerfile, Makefile, scoring tools, test environment lock, and sample data. The dependency map includes source from the pinned SQLGlot revision, whose original MIT notice is preserved in [SQLGLOT-LICENSE](SQLGLOT-LICENSE).
 
-The map generator uses the test manifest for node IDs. Only the evaluation tool uses `sample/answers.json`. The container loads the generated map and performs lightweight selection without importing SQLGlot or pytest during the submission run.
-
-The committed map records all 1,620 manifest tests, 183 source files, and 62 fixture paths. It merges the full pristine suite trace with a trace of process pool tasks from the executor and optimizer suites. On the official 30 sample patches the selector scored 315.010 simulated seconds and missed no patches. The full-suite baseline scored 1,104.510 simulated seconds. In a separate local full-suite comparison, disabling identifier normalization caused 46 distinct test IDs to fail. The selector included all 46 among 309 selected tests.
-
-These measurements used the local Windows Python 3.12 environment. The Linux Docker run, its CPU charge, and the unseen competition data remain unverified.
-
-Method references: [Practical Regression Test Selection with Dynamic File Dependencies](https://users.ece.utexas.edu/~gligoric/papers/GligoricETAL15Ekstazi.pdf) and [Coverage.py measurement contexts](https://coverage.readthedocs.io/en/7.14.3/contexts.html).
-
-The Builders/RWX starter kit supplied the Dockerfile, Makefile, scorer, requirements lock, sample data, scoring rules, and original README. The dependency map contains pinned SQLGlot source. Its MIT notice is in [SQLGLOT-LICENSE](SQLGLOT-LICENSE).
-
+The dependency mapping approach draws on [Ekstazi's work on dynamic file dependencies](https://users.ece.utexas.edu/~gligoric/papers/GligoricETAL15Ekstazi.pdf) and [Coverage.py's per-test measurement contexts](https://coverage.readthedocs.io/en/7.14.3/contexts.html).

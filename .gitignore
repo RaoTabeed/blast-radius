@@ -6,3 +6,4 @@ reports/
 vendor/
 .env
 .github/workflows/check.yml
+/git-project.ps1
