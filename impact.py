@@ -10,6 +10,11 @@ PIN = 'eb11aec4be8cb2122afe713a4816662c3f0fb2fa'
 HEADER = re.compile(r'diff --git a/(\S+) b/(\S+)$')
 HUNK = re.compile(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@')
 FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+WEEK_OFFSET_READERS = (
+    'sqlglot/dialects/dialect.py',
+    'sqlglot/generator.py',
+    'sqlglot/optimizer/simplify.py',
+)
 
 
 @dataclass
@@ -98,6 +103,35 @@ def source_tree(source):
     return ast.parse(source, type_comments=True)
 
 
+def week_offset_edit(old_tree, new_tree):
+    """Match a value-only edit to a dialect's week start offset."""
+    def assignment(node):
+        return (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name) and node.targets[0].id == 'WEEK_OFFSET')
+
+    def offset(node):
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            node = node.operand
+        return isinstance(node, ast.Constant) and type(node.value) is int and 0 <= node.value <= 6
+
+    for before, after in zip(old_tree.body, new_tree.body):
+        if not (isinstance(before, ast.ClassDef) and isinstance(after, ast.ClassDef)
+                and not before.keywords and not before.decorator_list
+                and len(before.bases) == 1 and isinstance(before.bases[0], ast.Name)
+                and before.bases[0].id == 'Dialect'):
+            continue
+        for old, new in zip(before.body, after.body):
+            if assignment(old) and assignment(new) and offset(old.value) and offset(new.value):
+                replacement = new.value
+                try:
+                    new.value = old.value
+                    if ast.dump(old_tree) == ast.dump(new_tree):
+                        return True
+                finally:
+                    new.value = replacement
+    return False
+
+
 def owners(tree):
     """Find executable scopes and leaf statements that may span multiple lines."""
     scope, statement, predicates = {}, {}, {}
@@ -157,7 +191,7 @@ class ImpactMap:
             if change.path.endswith('.sql') and change.path in self.fixtures:
                 affected = int(self.fixtures[change.path], 16) or None
             elif change.path in self.files:
-                affected = self.source_impact(change)
+                affected = self.source_impact(change, single_file=len(changes) == 1)
             else:
                 return None
             if affected is None:
@@ -172,7 +206,29 @@ class ImpactMap:
             mask ^= bit
         return numbers
 
-    def source_impact(self, change):
+    def week_offset_impact(self):
+        # At the pinned revision, Dialect's class initializer does not use
+        # WEEK_OFFSET. Only these runtime attribute reads consume its value.
+        # Include read sites for every receiver, including other dialects.
+        affected = 0
+        for path in WEEK_OFFSET_READERS:
+            if path not in self.files:
+                return None
+            entry = self.files[path]
+            collection = set(entry['collection'])
+            readers = [node for node in ast.walk(source_tree(entry['source']))
+                       if isinstance(node, ast.Attribute) and node.attr == 'WEEK_OFFSET']
+            if not readers:
+                return None
+            for node in readers:
+                line = node.lineno
+                mask = int(entry['lines'].get(str(line), '0'), 16)
+                if not mask or line in collection:
+                    return None
+                affected |= mask
+        return affected
+
+    def source_impact(self, change, *, single_file=False):
         entry = self.files[change.path]
         source = entry['source']
         applied = apply_hunks(source, change.hunks)
@@ -195,6 +251,14 @@ class ImpactMap:
         for line in removed:
             function = scope.get(line)
             if function is None or line in collection:
+                if (single_file and change.path.startswith('sqlglot/dialects/')
+                        and change.path != 'sqlglot/dialects/dialect.py'
+                        and week_offset_edit(old_tree, new_tree)):
+                    dependencies = self.week_offset_impact()
+                    if dependencies is not None:
+                        for definition_line in removed:
+                            dependencies |= coverage.get(definition_line, 0)
+                        return dependencies | readers
                 return None
             stmt = statements[line]
             direct = coverage.get(line, 0)

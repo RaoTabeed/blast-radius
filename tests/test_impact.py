@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from impact import ImpactMap, PIN, apply_hunks, parse_patch
+from impact import ImpactMap, PIN, WEEK_OFFSET_READERS, apply_hunks, parse_patch
 
 
 def ordinary_diff(*body, path='sample.py'):
@@ -64,3 +64,28 @@ class ImpactTests(unittest.TestCase):
         }
         diff = ordinary_diff('@@ -4 +4 @@', '-        and b', '+        or b')
         self.assertEqual(self.impact.select(diff), {0, 1, 2})
+
+    def test_week_offset_value_edit_includes_readers_and_definition_coverage(self):
+        path = 'sqlglot/dialects/example.py'
+        self.impact.files[path] = {
+            'source': 'class Example(Dialect):\n    WEEK_OFFSET = -1\n',
+            'lines': {'2': '2'}, 'collection': [], 'readers': '0',
+        }
+        for reader in WEEK_OFFSET_READERS:
+            self.impact.files[reader] = {
+                'source': 'return dialect.WEEK_OFFSET\n',
+                'lines': {'1': '1'}, 'collection': [],
+            }
+        diff = ordinary_diff('@@ -2 +2 @@', '-    WEEK_OFFSET = -1', '+    WEEK_OFFSET = -2', path=path)
+        self.assertEqual(self.impact.select(diff), {0, 1, 2})
+        self.impact.files[WEEK_OFFSET_READERS[0]]['collection'] = [1]
+        self.assertIsNone(self.impact.select(diff))
+
+    def test_week_offset_expression_edit_falls_back(self):
+        path = 'sqlglot/dialects/example.py'
+        self.impact.files[path] = {
+            'source': 'class Example(Dialect):\n    WEEK_OFFSET = -1\n',
+            'lines': {'2': '2'}, 'collection': [], 'readers': '0',
+        }
+        diff = ordinary_diff('@@ -2 +2 @@', '-    WEEK_OFFSET = -1', '+    WEEK_OFFSET = get_offset()', path=path)
+        self.assertIsNone(self.impact.select(diff))
