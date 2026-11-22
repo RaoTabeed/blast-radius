@@ -23,6 +23,8 @@ The baseline at `451b3ac` was 315.010 simulated seconds with zero missed patches
 | Follow MySQL-family `SHOW_PARSERS` closure calls for literal option edits that preserve dispatch keys | 283.454 s | 248.706 s | 0 | Kept |
 | Follow numeric escape decoding calls for tokenizer table edits that preserve keys and valid tuple shapes | 248.706 s | 219.065 s | 0 | Kept |
 | Compare AST nodes directly and stop at the first difference | 220.191 s with measured CPU | 220.011 s with measured CPU | 0 | Kept |
+| Rebuild coverage with worker activity attributed to process-pool submitters | 219.065 s | 199.852 s | 0 | Rejected because the fresh map omitted earlier coverage |
+| Merge the rebuilt coverage with the original map and refresh collection flags from the complete run | 219.065 s | 207.702 s | 0 | Kept |
 
 The week-offset rule reduced one full-suite fallback to 12 tests. It covers every pinned read site, including readers on other dialects, and falls back if a read site lacks test coverage or runs during collection.
 
@@ -31,3 +33,9 @@ The `SHOW_PARSERS` rule reduced another full-suite fallback to 20 tests. The dic
 The numeric escape rule reduced another full-suite fallback to 28 tests. The selector keeps tests covering the decoder call across all dialects and tests that executed the edited definition. Keys stay fixed because they also affect dialect initialization and SQL generation.
 
 Direct AST comparison produced byte-identical JSONL and the same simulated score of 219.065 seconds. Median selector process CPU across five paired container runs fell from 1.126 to 0.946 seconds.
+
+The coverage update attributes background work such as pickling worker results to all tests that submitted process-pool tasks. The complete pinned run distinguishes that activity from parent collection. The merge retained every earlier per-test, fixture, and source-reader dependency. Only the serialization patch's schedule changed on the samples, from 1,620 tests to 37.
+
+## Independent validation
+
+The clean pinned SQLGlot checkout passed 1,620 tests with one skip under the locked dependencies. Full-suite runs of four additional patches covered a different dialect week offset, a MySQL `SHOW` option, and two tokenizer escape tables. Those patches produced four distinct failing test IDs. The selector included all four.

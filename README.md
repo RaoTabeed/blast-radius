@@ -7,16 +7,17 @@ A regression test selector for the [RWX Blast Radius track](https://www.joinbuil
 | Run | Simulated time | Missed patches |
 | --- | ---: | ---: |
 | Earlier full-suite baseline on the 30 official samples | 1,104.510 s | 0 |
-| Coverage selector in Linux Docker on the same samples | **315.010 s** | **0** |
+| Original coverage selector in Linux Docker on the same samples | 315.010 s | 0 |
+| Current selector in Linux Docker on the same samples | **207.702 s** | **0** |
 
-The Docker run used the track's sample limits. The sample scorer reports simulated time and misses. The competition scorer also charges CPU time and evaluates unseen patches.
+The Docker run used the track's sample limits. The sample scorer reports simulated time and misses. The competition scorer also charges CPU time and evaluates unseen patches. See [improvements.md](improvements.md) for the experiment and validation results.
 
 In a separate check, disabling identifier normalization caused 46 test IDs to fail. The selector included all 46 among the 309 tests it selected. Coverage from the original checkout is an estimate of impact. Changes that alter imports, dynamic dispatch, or dependencies can require a wider selection.
 
 ## How it works
 
 1. **Build the dependency map.** Record which tests execute each source line or read each fixture and source file on pinned SQLGlot. Include Python worker processes started by optimizer and executor tests. The bundled map covers 1,620 test IDs, 183 source files, and 62 fixture paths.
-2. **Select tests for a patch.** Check each diff against the pinned source, look up coverage for affected statements or functions, and combine the results across changed files. Include tests that reached any operand when an edit could change short-circuit behavior. Use the full suite when the patch or its import-time effects cannot be mapped with enough confidence.
+2. **Select tests for a patch.** Check each diff against the pinned source, look up coverage for affected statements or functions, and combine the results across changed files. Include tests that reached any operand when an edit could change short-circuit behavior. For supported value-only edits to dialect and parser settings, follow coverage to where the values are consumed. Use the full suite when the patch or its import-time effects cannot be mapped with enough confidence.
 3. **Schedule the selected tests.** Try one through eight workers. For each worker count, place the longest test first on the least busy worker. Choose the schedule with the lowest simulated cost, including the two-second charge per worker.
 
 The container reads `/data/tests.json` and independent patches under `/data/commits/`. It prints one JSON object per patch on stdout, using the numerical test IDs from the manifest. For example:
@@ -59,7 +60,7 @@ python -m pip install -r requirements.lock coverage==7.17.4
 python tools/build_impact.py /path/to/sqlglot sample/tests.json impact-map.json.gz
 ```
 
-The generator runs tests against the pinned checkout and uses the manifest to map pytest node IDs to the recorded coverage. Docker builds copy the resulting map into the image.
+The generator runs tests against the pinned checkout and uses the manifest to map pytest node IDs to the recorded coverage. Pass `--merge /path/to/previous-map.json.gz` to retain the previously observed per-test dependencies. A complete passing run refreshes collection flags when merging. Docker builds copy the resulting map into the image.
 
 ## License and credits
 

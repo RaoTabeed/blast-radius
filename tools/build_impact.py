@@ -75,6 +75,7 @@ def build_map(root, manifest, output, targets, merge_from):
     os.environ['SKIP_INTEGRATION'] = '0'
     cov = coverage.Coverage(data_file=None, source=[str(root / 'sqlglot')])
     recorder = Recorder(root, cov)
+    pool_tests = set()
     sys.addaudithook(recorder.record_open)
     with TemporaryDirectory(prefix='blast-coverage-', dir=output.parent) as tmp:
         filename = str(Path(tmp) / '.coverage-workers')
@@ -83,6 +84,7 @@ def build_map(root, manifest, output, targets, merge_from):
         def submit(pool, fn, /, *args, **kwargs):
             if not recorder.current:
                 return original_submit(pool, fn, *args, **kwargs)
+            pool_tests.add(recorder.current)
             return original_submit(pool, traced_call, filename, str(root / 'sqlglot'),
                                    recorder.current, fn, args, kwargs)
 
@@ -90,7 +92,8 @@ def build_map(root, manifest, output, targets, merge_from):
             result = pytest.main(['-q', '--color=no', '-p', 'no:cacheprovider', *targets], plugins=[recorder])
         worker_cov = coverage.Coverage(data_file=filename)
         worker_cov.combine()
-        cov.get_data().update(worker_cov.get_data())
+        workers = coverage.CoverageData(no_disk=True)
+        workers.update(worker_cov.get_data())
     if result not in (pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED):
         raise SystemExit(f'Pytest did not complete collection and execution: {result}')
 
@@ -99,16 +102,25 @@ def build_map(root, manifest, output, targets, merge_from):
 
     data = cov.get_data()
     files = {}
-    for name in sorted(data.measured_files()):
+    for name in sorted(data.measured_files() | workers.measured_files()):
         path = Path(name)
         relative = path.relative_to(root).as_posix()
         contexts = data.contexts_by_lineno(name)
+        collection = [line for line, names in contexts.items() if '' in names]
+        worker_contexts = workers.contexts_by_lineno(name)
+        for line, names in worker_contexts.items():
+            contexts.setdefault(line, []).extend(names)
+            if '' in names:
+                # ProcessPoolExecutor also runs code between calls, such as
+                # unpickling inputs and pickling return values on the worker.
+                # The exact test is unknown at that point. Keep every submitter.
+                contexts[line].extend(pool_tests)
         if not contexts:
             continue
         files[relative] = {
             'source': path.read_text('utf-8'),
             'lines': {line: pack(names) for line, names in contexts.items()},
-            'collection': [line for line, names in contexts.items() if '' in names],
+            'collection': collection,
             'readers': pack(recorder.source_readers.get(relative, ())),
         }
     fixtures = {path: pack(readers) for path, readers in sorted(recorder.fixture_readers.items())
@@ -123,11 +135,12 @@ def build_map(root, manifest, output, targets, merge_from):
     if merge_from:
         with gzip.open(merge_from, 'rt', encoding='utf-8') as handle:
             earlier = json.load(handle)
-        payload = merge(earlier, payload)
+        complete = targets == ['tests'] and not skipped_or_absent and result == pytest.ExitCode.OK
+        payload = merge(earlier, payload, refresh_collection=complete)
     output.write_bytes(gzip.compress(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode(), mtime=0))
 
 
-def merge(base, supplement):
+def merge(base, supplement, *, refresh_collection=False):
     if (base['revision'], base['ids']) != (supplement['revision'], supplement['ids']):
         raise ValueError('Cannot combine maps for differing source revisions or test IDs')
 
@@ -143,7 +156,12 @@ def merge(base, supplement):
             raise ValueError(f'Cannot combine differing versions of {path}')
         for line, mask in extra['lines'].items():
             entry['lines'][line] = combine_masks(entry['lines'].get(line, '0'), mask)
-        entry['collection'] = sorted(set(entry['collection']) | set(extra['collection']))
+        # A complete run separates parent collection from worker activity.
+        # Partial traces can add evidence but cannot clear collection flags.
+        collection = set(extra['collection'])
+        if not refresh_collection:
+            collection.update(entry['collection'])
+        entry['collection'] = sorted(collection)
         entry['readers'] = combine_masks(entry['readers'], extra['readers'])
     for path, mask in supplement['fixtures'].items():
         base['fixtures'][path] = combine_masks(base['fixtures'].get(path, '0'), mask)
