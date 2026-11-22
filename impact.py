@@ -15,6 +15,10 @@ WEEK_OFFSET_READERS = (
     'sqlglot/generator.py',
     'sqlglot/optimizer/simplify.py',
 )
+MYSQL_SHOW_PARSERS = {
+    'sqlglot/parsers/mysql.py': ('MySQLParser', 'parser.Parser'),
+    'sqlglot/parsers/singlestore.py': ('SingleStoreParser', 'MySQLParser'),
+}
 
 
 @dataclass
@@ -103,25 +107,20 @@ def source_tree(source):
     return ast.parse(source, type_comments=True)
 
 
-def week_offset_edit(old_tree, new_tree):
-    """Match a value-only edit to a dialect's week start offset."""
+def class_setting_edit(old_tree, new_tree, setting, base, compatible, class_name=None):
+    """Match an edit to one class assignment with the rest of the AST intact."""
     def assignment(node):
         return (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name) and node.targets[0].id == 'WEEK_OFFSET')
-
-    def offset(node):
-        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            node = node.operand
-        return isinstance(node, ast.Constant) and type(node.value) is int and 0 <= node.value <= 6
+                and isinstance(node.targets[0], ast.Name) and node.targets[0].id == setting)
 
     for before, after in zip(old_tree.body, new_tree.body):
         if not (isinstance(before, ast.ClassDef) and isinstance(after, ast.ClassDef)
                 and not before.keywords and not before.decorator_list
-                and len(before.bases) == 1 and isinstance(before.bases[0], ast.Name)
-                and before.bases[0].id == 'Dialect'):
+                and len(before.bases) == 1 and ast.unparse(before.bases[0]) == base
+                and (class_name is None or before.name == class_name)):
             continue
         for old, new in zip(before.body, after.body):
-            if assignment(old) and assignment(new) and offset(old.value) and offset(new.value):
+            if assignment(old) and assignment(new) and compatible(old.value, new.value):
                 replacement = new.value
                 try:
                     new.value = old.value
@@ -130,6 +129,39 @@ def week_offset_edit(old_tree, new_tree):
                 finally:
                     new.value = replacement
     return False
+
+
+def compatible_week_offsets(before, after):
+    def offset(node):
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            node = node.operand
+        return isinstance(node, ast.Constant) and type(node.value) is int and 0 <= node.value <= 6
+
+    return offset(before) and offset(after)
+
+
+def compatible_show_parsers(before, after):
+    """The trie keys and factories stay fixed. Only the closure options may change."""
+    if not (isinstance(before, ast.Dict) and isinstance(after, ast.Dict)
+            and len(before.keys) == len(after.keys)):
+        return False
+    for old, new in zip(before.keys, after.keys):
+        if (old is None) != (new is None) or (old is not None and ast.dump(old) != ast.dump(new)):
+            return False
+    option_types = {'target': (bool, str), 'full': (bool,), 'global_': (bool,)}
+    for old, new in zip(before.values, after.values):
+        if ast.dump(old) == ast.dump(new):
+            continue
+        if not all(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                   and call.func.id == '_show_parser' and len(call.args) == 1
+                   and isinstance(call.args[0], ast.Constant) and type(call.args[0].value) is str
+                   and all(isinstance(kw.value, ast.Constant)
+                           and type(kw.value.value) in option_types.get(kw.arg, ())
+                           for kw in call.keywords) for call in (old, new)):
+            return False
+        if old.args[0].value != new.args[0].value:
+            return False
+    return True
 
 
 def owners(tree):
@@ -228,6 +260,37 @@ class ImpactMap:
                 affected |= mask
         return affected
 
+    def mysql_show_impact(self):
+        # The factory only captures constants. SHOW_TRIE is derived from the
+        # dictionary's keys, and dispatch observes values through the closure.
+        entry = self.files.get('sqlglot/parsers/mysql.py')
+        if entry is None:
+            return None
+        tree = source_tree(entry['source'])
+        for node in tree.body:
+            if (isinstance(node, ast.FunctionDef) and node.name == '_show_parser'
+                    and len(node.body) == 2):
+                closure, result = node.body
+                if (not isinstance(closure, ast.FunctionDef) or not isinstance(result, ast.Return)
+                        or len(closure.body) != 1 or not isinstance(closure.body[0], ast.Return)):
+                    return None
+                line = closure.body[0].lineno
+                if line not in entry['collection']:
+                    return int(entry['lines'].get(str(line), '0'), 16) or None
+        return None
+
+    def class_setting_impact(self, path, old_tree, new_tree):
+        if (path.startswith('sqlglot/dialects/') and path != 'sqlglot/dialects/dialect.py'
+                and class_setting_edit(old_tree, new_tree, 'WEEK_OFFSET', 'Dialect',
+                                       compatible_week_offsets)):
+            return self.week_offset_impact()
+        if path in MYSQL_SHOW_PARSERS:
+            name, base = MYSQL_SHOW_PARSERS[path]
+            if class_setting_edit(old_tree, new_tree, 'SHOW_PARSERS', base,
+                                  compatible_show_parsers, class_name=name):
+                return self.mysql_show_impact()
+        return None
+
     def source_impact(self, change, *, single_file=False):
         entry = self.files[change.path]
         source = entry['source']
@@ -251,10 +314,8 @@ class ImpactMap:
         for line in removed:
             function = scope.get(line)
             if function is None or line in collection:
-                if (single_file and change.path.startswith('sqlglot/dialects/')
-                        and change.path != 'sqlglot/dialects/dialect.py'
-                        and week_offset_edit(old_tree, new_tree)):
-                    dependencies = self.week_offset_impact()
+                if single_file:
+                    dependencies = self.class_setting_impact(change.path, old_tree, new_tree)
                     if dependencies is not None:
                         for definition_line in removed:
                             dependencies |= coverage.get(definition_line, 0)

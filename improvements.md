@@ -20,5 +20,8 @@ The baseline at `451b3ac` was 315.010 simulated seconds with zero missed patches
 | Attempt | Before | After | Misses | Outcome |
 | --- | ---: | ---: | ---: | --- |
 | Follow reads for a value-only dialect `WEEK_OFFSET` edit and keep tests that executed the definition | 315.010 s | 283.454 s | 0 | Kept |
+| Follow MySQL-family `SHOW_PARSERS` closure calls for literal option edits that preserve dispatch keys | 283.454 s | 248.706 s | 0 | Kept |
 
 The week-offset rule reduced one full-suite fallback to 13 tests. It covers every pinned read site, including readers on other dialects, and falls back if a read site lacks test coverage or runs during collection.
+
+The `SHOW_PARSERS` rule reduced another full-suite fallback to 20 tests. The dictionaries still build the same tries. The selector includes every test that called the affected closure factory's returned functions or executed the edited definition.

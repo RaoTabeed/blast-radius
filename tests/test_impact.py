@@ -89,3 +89,23 @@ class ImpactTests(unittest.TestCase):
         }
         diff = ordinary_diff('@@ -2 +2 @@', '-    WEEK_OFFSET = -1', '+    WEEK_OFFSET = get_offset()', path=path)
         self.assertIsNone(self.impact.select(diff))
+
+    def test_show_parser_options_use_closure_coverage(self):
+        path = 'sqlglot/parsers/singlestore.py'
+        self.impact.files[path] = {
+            'source': 'class SingleStoreParser(MySQLParser):\n'
+                      '    SHOW_PARSERS = {"A": _show_parser("A", target=True)}\n',
+            'lines': {'2': '2'}, 'collection': [2],
+        }
+        self.impact.files['sqlglot/parsers/mysql.py'] = {
+            'source': 'def _show_parser(*args, **kwargs):\n'
+                      '    def parse(self):\n'
+                      '        return self._parse_show_mysql(*args, **kwargs)\n'
+                      '    return parse\n',
+            'lines': {'3': '1'}, 'collection': [],
+        }
+        diff = ordinary_diff('@@ -2 +2 @@', '-    SHOW_PARSERS = {"A": _show_parser("A", target=True)}',
+                             '+    SHOW_PARSERS = {"A": _show_parser("A", target=False)}', path=path)
+        self.assertEqual(self.impact.select(diff), {0, 1, 2})
+        self.assertIsNone(self.impact.select(diff.replace('+    SHOW_PARSERS = {"A"',
+                                                          '+    SHOW_PARSERS = {"B"')))
