@@ -109,13 +109,18 @@ def source_tree(source):
 
 def class_setting_edit(old_tree, new_tree, setting, base, compatible, class_name=None):
     """Match an edit to one class assignment with the rest of the AST intact."""
+    def classes(tree):
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                yield node
+                yield from classes(node)
+
     def assignment(node):
         return (isinstance(node, ast.Assign) and len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == setting)
 
-    for before, after in zip(old_tree.body, new_tree.body):
-        if not (isinstance(before, ast.ClassDef) and isinstance(after, ast.ClassDef)
-                and not before.keywords and not before.decorator_list
+    for before, after in zip(classes(old_tree), classes(new_tree)):
+        if not (not before.keywords and not before.decorator_list
                 and len(before.bases) == 1 and ast.unparse(before.bases[0]) == base
                 and (class_name is None or before.name == class_name)):
             continue
@@ -162,6 +167,29 @@ def compatible_show_parsers(before, after):
         if old.args[0].value != new.args[0].value:
             return False
     return True
+
+
+def compatible_numeric_escapes(before, after):
+    """Match numeric escape table values while keeping all keys and tuple types."""
+    def table(node):
+        if not isinstance(node, ast.Dict) or not node.keys:
+            return None
+        keys = []
+        for key, value in zip(node.keys, node.values):
+            if not (isinstance(key, ast.Constant) and type(key.value) is str
+                    and isinstance(value, ast.Tuple) and len(value.elts) == 4
+                    and all(isinstance(item, ast.Constant) and type(item.value) is int
+                            for item in value.elts)):
+                return None
+            radix, minimum, maximum, limit = (item.value for item in value.elts)
+            if not (2 <= radix <= 36 and 1 <= minimum <= maximum <= 32
+                    and 0 <= limit <= 0x10FFFF):
+                return None
+            keys.append(key.value)
+        return keys
+
+    keys = table(before)
+    return keys is not None and keys == table(after)
 
 
 def owners(tree):
@@ -279,11 +307,27 @@ class ImpactMap:
                     return int(entry['lines'].get(str(line), '0'), 16) or None
         return None
 
+    def numeric_escapes_impact(self):
+        # Dialect initialization and SQL generation only inspect the table's
+        # keys or truthiness. The decoder is where the tuple values are used.
+        entry = self.files.get('sqlglot/tokenizer_core.py')
+        if entry is None:
+            return None
+        calls = [node for node in ast.walk(source_tree(entry['source']))
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                 and node.func.attr == '_scan_numeric_escape']
+        if len(calls) != 1 or calls[0].lineno in entry['collection']:
+            return None
+        return int(entry['lines'].get(str(calls[0].lineno), '0'), 16) or None
+
     def class_setting_impact(self, path, old_tree, new_tree):
-        if (path.startswith('sqlglot/dialects/') and path != 'sqlglot/dialects/dialect.py'
-                and class_setting_edit(old_tree, new_tree, 'WEEK_OFFSET', 'Dialect',
-                                       compatible_week_offsets)):
-            return self.week_offset_impact()
+        if path.startswith('sqlglot/dialects/') and path != 'sqlglot/dialects/dialect.py':
+            if class_setting_edit(old_tree, new_tree, 'WEEK_OFFSET', 'Dialect',
+                                  compatible_week_offsets):
+                return self.week_offset_impact()
+            if class_setting_edit(old_tree, new_tree, 'NUMERIC_ESCAPES', 'tokens.Tokenizer',
+                                  compatible_numeric_escapes, class_name='Tokenizer'):
+                return self.numeric_escapes_impact()
         if path in MYSQL_SHOW_PARSERS:
             name, base = MYSQL_SHOW_PARSERS[path]
             if class_setting_edit(old_tree, new_tree, 'SHOW_PARSERS', base,

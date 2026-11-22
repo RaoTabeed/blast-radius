@@ -109,3 +109,20 @@ class ImpactTests(unittest.TestCase):
         self.assertEqual(self.impact.select(diff), {0, 1, 2})
         self.assertIsNone(self.impact.select(diff.replace('+    SHOW_PARSERS = {"A"',
                                                           '+    SHOW_PARSERS = {"B"')))
+
+    def test_numeric_escape_edit_keeps_decoder_coverage_and_rejects_key_changes(self):
+        path = 'sqlglot/dialects/example.py'
+        self.impact.files[path] = {
+            'source': 'class Example(Dialect):\n    class Tokenizer(tokens.Tokenizer):\n'
+                      '        NUMERIC_ESCAPES = {"u": (16, 4, 4, 0xFFFF)}\n',
+            'lines': {'3': '2'}, 'collection': [3],
+        }
+        self.impact.files['sqlglot/tokenizer_core.py'] = {
+            'source': 'def decode(self):\n    return self._scan_numeric_escape()\n',
+            'lines': {'2': '1'}, 'collection': [],
+        }
+        diff = ordinary_diff('@@ -3 +3 @@', '-        NUMERIC_ESCAPES = {"u": (16, 4, 4, 0xFFFF)}',
+                             '+        NUMERIC_ESCAPES = {"u": (8, 4, 4, 0xFFFF)}', path=path)
+        self.assertEqual(self.impact.select(diff), {0, 1, 2})
+        self.assertIsNone(self.impact.select(diff.replace('+        NUMERIC_ESCAPES = {"u"',
+                                                          '+        NUMERIC_ESCAPES = {"U"')))
