@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+output.jsonl
+reports/
+.venv/
+vendor/
+.env
+.github/workflows/check.yml
