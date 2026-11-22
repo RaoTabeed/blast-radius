@@ -53,6 +53,10 @@ class ImpactTests(unittest.TestCase):
         diff = ordinary_diff('@@ -2 +2 @@', '-    return 1', '+    return 2')
         self.assertEqual(self.impact.select(diff), {0, 1, 2})
 
+    def test_equal_literals_with_different_types_are_an_edit(self):
+        diff = ordinary_diff('@@ -2 +2 @@', '-    return 1', '+    return 1.0')
+        self.assertEqual(self.impact.select(diff), {0, 1, 2})
+
     def test_signature_edit_falls_back(self):
         diff = ordinary_diff('@@ -1 +1 @@', '-def f():', '+def f(arg):')
         self.assertIsNone(self.impact.select(diff))

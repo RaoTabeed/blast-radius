@@ -107,6 +107,27 @@ def source_tree(source):
     return ast.parse(source, type_comments=True)
 
 
+def same_ast(before, after):
+    """Compare parsed syntax, ignoring source locations."""
+    if before is after:
+        return True
+    if type(before) is not type(after):
+        return False
+    if isinstance(before, ast.AST):
+        for field, value in ast.iter_fields(before):
+            if not same_ast(value, getattr(after, field)):
+                return False
+        return True
+    if isinstance(before, list):
+        if len(before) != len(after):
+            return False
+        for old, new in zip(before, after):
+            if not same_ast(old, new):
+                return False
+        return True
+    return before == after
+
+
 def class_setting_edit(old_tree, new_tree, setting, base, compatible, class_name=None):
     """Match an edit to one class assignment with the rest of the AST intact."""
     def classes(tree):
@@ -129,7 +150,7 @@ def class_setting_edit(old_tree, new_tree, setting, base, compatible, class_name
                 replacement = new.value
                 try:
                     new.value = old.value
-                    if ast.dump(old_tree) == ast.dump(new_tree):
+                    if same_ast(old_tree, new_tree):
                         return True
                 finally:
                     new.value = replacement
@@ -148,14 +169,11 @@ def compatible_week_offsets(before, after):
 def compatible_show_parsers(before, after):
     """The trie keys and factories stay fixed. Only the closure options may change."""
     if not (isinstance(before, ast.Dict) and isinstance(after, ast.Dict)
-            and len(before.keys) == len(after.keys)):
+            and same_ast(before.keys, after.keys)):
         return False
-    for old, new in zip(before.keys, after.keys):
-        if (old is None) != (new is None) or (old is not None and ast.dump(old) != ast.dump(new)):
-            return False
     option_types = {'target': (bool, str), 'full': (bool,), 'global_': (bool,)}
     for old, new in zip(before.values, after.values):
-        if ast.dump(old) == ast.dump(new):
+        if same_ast(old, new):
             continue
         if not all(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
                    and call.func.id == '_show_parser' and len(call.args) == 1
@@ -349,7 +367,7 @@ class ImpactMap:
         except (SyntaxError, ValueError):
             return None
         readers = int(entry.get('readers', '0'), 16)
-        if ast.dump(old_tree) == ast.dump(new_tree):
+        if same_ast(old_tree, new_tree):
             return readers
         scope, statements, predicates = owners(old_tree)
         coverage = {int(line): int(mask, 16) for line, mask in entry['lines'].items()}
