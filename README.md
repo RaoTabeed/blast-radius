@@ -1,6 +1,6 @@
-# Blast Radius starter
+# Blast Radius
 
-A working submission for the Blast Radius track. It runs every test on every commit, so it never misses a failure and scores badly. Your job is to run less without missing.
+This entry selects tests using measured dependencies from the pinned SQLGlot checkout. It keeps a full-suite fallback and chooses the least expensive schedule it finds across one to eight workers.
 
 ## The problem
 
@@ -69,19 +69,25 @@ Push to a public GitHub repository with the `Dockerfile` at its top, then enter 
 - The scorer is linux/amd64. On an Apple Silicon Mac, build and run with `--platform linux/amd64`, as the Makefile does, or your timings and wheels will differ.
 - A change that only adds a comment is not promised to be harmless.
 
-## Current development status
-
-This entry currently selects every test and chooses the cheapest of 1-8 LPT worker schedules using integer milliseconds. It does not read sample answers at runtime. This is a correctness baseline, not yet a competitive impact selector.
-
-Validated locally with Python 3.12: 4 scheduler tests pass; official sample scorer accepts all 30 commits, 0 misses, 1104.510 simulated seconds. CPU and Linux container execution still need validation. A local GitHub Actions workflow is prepared but not uploaded because the current login lacks workflow scope. Docker validation and CPU measurement remain pending.
-
-Commands:
+## Development
 
     python -m unittest discover -s tests -v
     python tools/evaluate.py
     make sample
 
-Next: generate coverage and fixture-access maps from sqlglot at the pinned commit, validate changed-line mapping and import fallbacks, then compare selection cost and misses. Sample answers remain evaluation-only.
+The map uses pytest test IDs, per-test line coverage and observed reads of fixture and source files. The selector checks the diff against the pinned source, looks up coverage for affected statements or functions, and unions the results across files. It selects the full suite for unsupported changes and changes with unresolved effects during import. Python edits with an identical abstract syntax tree still select tests that read the source file. Coverage measures the pristine checkout, so different dependencies or behavior in the scoring environment can affect recall.
 
-Attribution: Dockerfile, Makefile, score.py, requirements.lock, sample data, SCORING.md and the original README are supplied by the Builders/RWX Blast Radius starter kit. selector.py and development tooling contain team changes. SQLGlot is an external MIT-licensed dependency.
+To reproduce the map, install the test dependencies and `coverage==7.17.4`, check out the pinned SQLGlot revision in a separate directory with no tracked edits, and run:
+
+    python tools/build_impact.py PATH_TO_SQLGLOT sample/tests.json impact-map.json.gz
+
+The map generator uses the test manifest for node IDs. Only the evaluation tool uses `sample/answers.json`. The container loads the generated map and performs lightweight selection without importing SQLGlot or pytest during the submission run.
+
+The committed map records all 1,620 manifest tests, 183 source files, and 62 fixture paths. It merges the full pristine suite trace with a trace of process pool tasks from the executor and optimizer suites. On the official 30 sample patches the selector scored 315.010 simulated seconds and missed no patches. The full-suite baseline scored 1,104.510 simulated seconds. In a separate local full-suite comparison, disabling identifier normalization caused 46 distinct test IDs to fail. The selector included all 46 among 309 selected tests.
+
+These measurements used the local Windows Python 3.12 environment. The Linux Docker run, its CPU charge, and the unseen competition data remain unverified.
+
+Method references: [Practical Regression Test Selection with Dynamic File Dependencies](https://users.ece.utexas.edu/~gligoric/papers/GligoricETAL15Ekstazi.pdf) and [Coverage.py measurement contexts](https://coverage.readthedocs.io/en/7.14.3/contexts.html).
+
+The Builders/RWX starter kit supplied the Dockerfile, Makefile, scorer, requirements lock, sample data, scoring rules, and original README. The dependency map contains pinned SQLGlot source. Its MIT notice is in [SQLGLOT-LICENSE](SQLGLOT-LICENSE).
 
