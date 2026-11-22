@@ -73,7 +73,7 @@ Push to a public GitHub repository with the `Dockerfile` at its top, then enter 
 
 This entry currently selects every test and chooses the cheapest of 1-8 LPT worker schedules using integer milliseconds. It does not read sample answers at runtime. This is a correctness baseline, not yet a competitive impact selector.
 
-Validated locally with Python 3.12: 4 scheduler tests pass; official sample scorer accepts all 30 commits, 0 misses, 1104.510 simulated seconds. CPU and Linux container execution still need validation. GitHub Actions runs the unit tests, official local evaluation, and Docker sample under the kit limits.
+Validated locally with Python 3.12: 4 scheduler tests pass; official sample scorer accepts all 30 commits, 0 misses, 1104.510 simulated seconds. CPU and Linux container execution still need validation. A local GitHub Actions workflow is prepared but not uploaded because the current login lacks workflow scope. Docker validation and CPU measurement remain pending.
 
 Commands:
 
@@ -84,3 +84,4 @@ Commands:
 Next: generate coverage and fixture-access maps from sqlglot at the pinned commit, validate changed-line mapping and import fallbacks, then compare selection cost and misses. Sample answers remain evaluation-only.
 
 Attribution: Dockerfile, Makefile, score.py, requirements.lock, sample data, SCORING.md and the original README are supplied by the Builders/RWX Blast Radius starter kit. selector.py and development tooling contain team changes. SQLGlot is an external MIT-licensed dependency.
+
